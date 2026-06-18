@@ -1,0 +1,1641 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CROM - Controle de Óleo</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM (Production) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX compilation in browser -->
+    <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+    <!-- LocalForage for Offline Storage -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        crom: {
+                            green: '#1b4332',     // Dark forest green
+                            lightGreen: '#2d6a4f',// Vibrant green
+                            neon: '#52b788',      // Tech accent green
+                            yellow: '#ffb703',    // Warm oil yellow
+                            zincDark: '#09090b',  // Modern deep dark
+                            bg: '#f8fafc'         // Soft clean grey background
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: #f8fafc;
+            overscroll-behavior-y: contain; 
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            user-select: none; /* Ideal para tablet industrial */
+        }
+        #root {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        /* Custom UI Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 99px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+        /* Touch target improvements */
+        input, button, select {
+            min-height: 48px;
+        }
+        /* Hide number arrows */
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+
+        /* Print styling for direct PDF generation */
+        @media print {
+            aside, .no-print, button, input {
+                display: none !important;
+            }
+            main {
+                padding: 0 !important;
+                margin: 0 !important;
+                width: 100% !important;
+                overflow: visible !important;
+                background: white !important;
+            }
+            .print-full-width {
+                width: 100% !important;
+                box-shadow: none !important;
+                border: 1px solid #e2e8f0 !important;
+                background: white !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="env,react">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // Initialize LocalForage instances
+        const store = localforage.createInstance({ name: "CromControleApp_v5" });
+
+        // --- Gemini API Config & Integration ---
+        const apiKey = ""; // Runtime populated or empty key
+
+        const callGeminiAPI = async (systemPrompt, userPrompt, useJson = false, jsonSchema = null) => {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: userPrompt }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] }
+            };
+
+            if (useJson && jsonSchema) {
+                payload.generationConfig = {
+                    responseMimeType: "application/json",
+                    responseSchema: jsonSchema
+                };
+            }
+
+            const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const retries = 5;
+            let currentDelay = 1000;
+
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`Status: ${response.status}`);
+                    const result = await response.json();
+                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (text) return text;
+                    throw new Error("Resposta inválida da API.");
+                } catch (error) {
+                    if (i === retries - 1) throw error;
+                    await delay(currentDelay);
+                    currentDelay *= 2;
+                }
+            }
+        };
+
+        // --- Helper Functions ---
+        const formatCurrency = (value) => {
+            return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
+        };
+
+        const formatDate = (dateString) => {
+            if (!dateString) return '';
+            const [year, month, day] = dateString.split('-');
+            return `${day}/${month}/${year}`;
+        };
+
+        // --- Brand Header Logo ---
+        const Logo = () => (
+            <div className="flex flex-col items-center justify-center p-6 border-b border-white/5 bg-zinc-900/30">
+                <div className="relative">
+                    <div className="absolute -inset-1.5 rounded-full bg-crom-neon/20 blur-sm"></div>
+                    <svg className="relative" width="56" height="56" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M50 12 C 20 42, 12 62, 12 74 C 12 88, 28 94, 50 94 C 72 94, 88 88, 88 74 C 88 62, 80 42, 50 12 Z" fill="#ffb703" opacity="0.95"/>
+                        <path d="M50 28 C 34 44, 28 60, 38 76 C 48 88, 60 76, 50 48 Z" fill="#1b4332" opacity="0.85"/>
+                        <path d="M32 64 C 26 70, 26 78, 36 82" stroke="white" strokeWidth="4" strokeLinecap="round" opacity="0.4"/>
+                    </svg>
+                </div>
+                <h1 className="text-2xl font-black mt-3 tracking-widest text-white">CROM</h1>
+                <p className="text-[10px] font-bold text-crom-neon tracking-widest uppercase mt-0.5">RECICLAGEM DE ÓLEO</p>
+            </div>
+        );
+
+        // --- Screen 1: Nova Compra ---
+        const NovaCompraScreen = ({ onSave, sugerirColetores, onOpenWhatsAppShare, customAlert, customConfirm }) => {
+            const [fornecedor, setFornecedor] = useState('');
+            const [data, setData] = useState(new Date().toISOString().split('T')[0]);
+            const [litrosBrutos, setLitrosBrutos] = useState('');
+            const [desconto, setDesconto] = useState('0');
+            const [valorLitro, setValorLitro] = useState('');
+            const [coletor, setColetor] = useState('');
+            
+            // AI Suggestion State
+            const [descVisual, setDescVisual] = useState('');
+            const [isAnalyzing, setIsAnalyzing] = useState(false);
+            const [aiSuggestion, setAiSuggestion] = useState(null);
+            const [showAiModal, setShowAiModal] = useState(false);
+
+            // Calculations
+            const lBrutosNum = parseFloat(litrosBrutos) || 0;
+            const descNum = parseFloat(desconto) || 0;
+            const vLitroNum = parseFloat(valorLitro) || 0;
+
+            const litrosLiquidos = lBrutosNum * (1 - (descNum / 100));
+            const valorTotal = litrosLiquidos * vLitroNum;
+
+            const handleSave = async () => {
+                if (!fornecedor || !data || !litrosBrutos || !valorLitro || !coletor) {
+                    customAlert("Campos Obrigatórios", "Por favor, preencha todos os campos obrigatórios (Fornecedor, Coletor, Data, Litros e Valor).");
+                    return;
+                }
+
+                const novaCompra = {
+                    id: Date.now().toString(),
+                    fornecedor: fornecedor.trim(),
+                    coletor: coletor.trim(),
+                    data,
+                    litrosBrutos: lBrutosNum,
+                    desconto: descNum,
+                    valorLitro: vLitroNum,
+                    litrosLiquidos,
+                    valorTotal,
+                    status: 'aberto',
+                    fechamentoId: null,
+                    timestamp: new Date().getTime()
+                };
+
+                onSave(novaCompra);
+                
+                // Opção imediata de enviar comprovante usando modal customizado
+                const querCompartilhar = await customConfirm("Coleta Salva!", "Coleta registrada com sucesso! Deseja enviar o comprovante de coleta por WhatsApp agora?");
+                if (querCompartilhar) {
+                    onOpenWhatsAppShare(novaCompra);
+                }
+
+                // Reset form
+                setFornecedor('');
+                setLitrosBrutos('');
+                setDesconto('0');
+                setValorLitro('');
+                setAiSuggestion(null);
+            };
+
+            const handleSuggestDiscount = async () => {
+                if (!descVisual.trim()) {
+                    customAlert("IA Crom", "Descreva o aspecto do óleo primeiro para a IA analisar.");
+                    return;
+                }
+                setIsAnalyzing(true);
+                try {
+                    const systemPrompt = "Você é o especialista químico e regulador de descontos de impureza da CROM Reciclagem de Óleo. Sua tarefa é analisar a descrição visual do óleo vegetal coletado e sugerir o desconto técnico adequado (inteiro de 0 a 100).";
+                    const jsonSchema = {
+                        type: "OBJECT",
+                        properties: {
+                            descontoSugerido: { type: "INTEGER" },
+                            justificativa: { type: "STRING" }
+                        },
+                        required: ["descontoSugerido", "justificativa"]
+                    };
+                    const responseText = await callGeminiAPI(systemPrompt, `Descrição do óleo: "${descVisual}"`, true, jsonSchema);
+                    const data = JSON.parse(responseText);
+                    setAiSuggestion(data);
+                } catch (err) {
+                    console.error(err);
+                    customAlert("Erro na IA", "Ocorreu um erro ao consultar a IA. Verifique sua conexão e tente novamente.");
+                } finally {
+                    setIsAnalyzing(false);
+                }
+            };
+
+            const applyAiSuggestion = () => {
+                if (aiSuggestion) {
+                    setDesconto(aiSuggestion.descontoSugerido.toString());
+                    setShowAiModal(false);
+                    setDescVisual('');
+                }
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden relative">
+                    
+                    {/* AI Discount Advisor Modal */}
+                    {showAiModal && (
+                        <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn">
+                            <div className="bg-white rounded-2xl p-6 max-w-xl w-full shadow-2xl border border-slate-100 flex flex-col max-h-[90%]">
+                                <div className="flex justify-between items-center mb-4 pb-2 border-b">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xl">✨</span>
+                                        <h3 className="text-lg font-black text-slate-800">Assistente de Impurezas IA</h3>
+                                    </div>
+                                    <button onClick={() => setShowAiModal(false)} className="text-slate-400 hover:text-slate-600 font-bold p-1">X</button>
+                                </div>
+                                
+                                <div className="space-y-4 flex-1 overflow-y-auto pr-1">
+                                    <p className="text-sm text-slate-600">Descreva o aspecto visual do óleo para estimar a perda ou impurezas sólidas e água:</p>
+                                    
+                                    <textarea
+                                        value={descVisual}
+                                        onChange={(e) => setDescVisual(e.target.value)}
+                                        placeholder="Ex: Óleo muito escuro, com restos de comida visíveis e uma camada transparente de água no fundo do galão."
+                                        className="w-full p-4 border rounded-xl h-24 text-sm focus:ring-2 focus:ring-crom-lightGreen outline-none resize-none"
+                                    />
+
+                                    <div className="flex flex-wrap gap-2">
+                                        <button onClick={() => setDescVisual("Óleo limpo, amarelo e fluído sem sedimentos")} className="text-xs bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">Amarelo Fluído</button>
+                                        <button onClick={() => setDescVisual("Presença de muita água no fundo e gordura de fritura escura")} className="text-xs bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">Com água + Gordura</button>
+                                        <button onClick={() => setDescVisual("Óleo pastoso esbranquiçado, indicando banha animal solidificada")} className="text-xs bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">Gordura Animal</button>
+                                    </div>
+
+                                    <button
+                                        onClick={handleSuggestDiscount}
+                                        disabled={isAnalyzing}
+                                        className="w-full bg-slate-900 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:bg-black transition-colors disabled:opacity-50"
+                                    >
+                                        {isAnalyzing ? "Analisando Amostra..." : "✨ Calcular Desconto Recomendado"}
+                                    </button>
+
+                                    {aiSuggestion && (
+                                        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 mt-4">
+                                            <div className="flex justify-between items-center mb-2">
+                                                <span className="text-xs font-black text-emerald-800 uppercase tracking-widest">Resultado Sugerido</span>
+                                                <span className="text-2xl font-black text-crom-lightGreen">{aiSuggestion.descontoSugerido}%</span>
+                                            </div>
+                                            <p className="text-xs text-slate-700 leading-relaxed"><strong className="text-emerald-900">Justificativa:</strong> {aiSuggestion.justificativa}</p>
+                                            
+                                            <button
+                                                onClick={applyAiSuggestion}
+                                                className="w-full mt-4 bg-crom-lightGreen hover:bg-crom-green text-white font-bold py-2 rounded-lg text-sm transition-colors"
+                                            >
+                                                Aplicar Desconto de {aiSuggestion.descontoSugerido}%
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="mb-6">
+                        <span className="text-xs font-bold text-crom-lightGreen tracking-wider uppercase bg-green-50 px-3 py-1 rounded-full">ENTRADA INDUSTRIAL</span>
+                        <h2 className="text-2xl font-black text-slate-800 mt-2">Registrar Coleta de Óleo</h2>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Fornecedor */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Fornecedor / Ponto de Coleta *</label>
+                                <input 
+                                    type="text" 
+                                    value={fornecedor}
+                                    onChange={(e) => setFornecedor(e.target.value)}
+                                    className="w-full p-4 text-base border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen focus:border-transparent outline-none transition-all shadow-sm font-medium text-slate-800"
+                                    placeholder="Ex: Pastelaria do Centro, Restaurante Grill..."
+                                />
+                            </div>
+
+                            {/* Coletor com Sugestões Rápidas */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Nome do Coletor *</label>
+                                <input 
+                                    type="text" 
+                                    value={coletor}
+                                    onChange={(e) => setColetor(e.target.value)}
+                                    className="w-full p-4 text-base border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen focus:border-transparent outline-none transition-all shadow-sm font-medium text-slate-800"
+                                    placeholder="Ex: Rodrigo, Marcos, Cássio..."
+                                />
+                                {sugerirColetores.length > 0 && (
+                                    <div className="flex flex-wrap gap-2 mt-2">
+                                        <span className="text-[10px] text-slate-400 font-semibold self-center">Sugestões:</span>
+                                        {sugerirColetores.map((colName) => (
+                                            <button
+                                                key={colName}
+                                                type="button"
+                                                onClick={() => setColetor(colName)}
+                                                className="bg-slate-100 hover:bg-crom-lightGreen hover:text-white text-slate-600 text-xs px-2.5 py-1 rounded-lg font-semibold transition-all"
+                                            >
+                                                {colName}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Data */}
+                            <div className="md:col-span-2">
+                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Data da Coleta *</label>
+                                <input 
+                                    type="date" 
+                                    value={data}
+                                    onChange={(e) => setData(e.target.value)}
+                                    className="w-full p-4 text-base border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen focus:border-transparent outline-none transition-all shadow-sm font-medium text-slate-800"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Numeric Fields Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 p-5 bg-slate-50 rounded-2xl border border-slate-100">
+                            {/* Litros Brutos */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Litros Brutos *</label>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        min="0" step="0.1"
+                                        value={litrosBrutos}
+                                        onChange={(e) => setLitrosBrutos(e.target.value)}
+                                        className="w-full p-4 pr-12 text-xl font-bold font-mono text-right border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen outline-none shadow-sm text-slate-800"
+                                        placeholder="0.0"
+                                    />
+                                    <span className="absolute right-4 top-4.5 text-slate-400 font-bold text-sm">L</span>
+                                </div>
+                            </div>
+
+                            {/* Desconto */}
+                            <div>
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider">Desconto (%)</label>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAiModal(true)}
+                                        className="text-[10px] bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-extrabold px-2 py-0.5 rounded-full transition-all flex items-center gap-1 border border-indigo-200 animate-pulse"
+                                    >
+                                        ✨ Sugerir com IA
+                                    </button>
+                                </div>
+                                <div className="relative">
+                                    <input 
+                                        type="number" 
+                                        min="0" max="100" step="1"
+                                        value={desconto}
+                                        onChange={(e) => setDesconto(e.target.value)}
+                                        className="w-full p-4 pr-12 text-xl font-bold font-mono text-right border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen outline-none shadow-sm text-slate-800"
+                                        placeholder="0"
+                                    />
+                                    <span className="absolute right-4 top-4.5 text-slate-400 font-bold text-sm">%</span>
+                                </div>
+                            </div>
+
+                            {/* Preço Unitário por Litro */}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Preço por Litro *</label>
+                                <div className="relative">
+                                    <span className="absolute left-4 top-4.5 text-slate-400 font-bold text-sm">R$</span>
+                                    <input 
+                                        type="number" 
+                                        min="0" step="0.01"
+                                        value={valorLitro}
+                                        onChange={(e) => setValorLitro(e.target.value)}
+                                        className="w-full p-4 pl-12 text-xl font-bold font-mono text-right border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen outline-none shadow-sm text-slate-800"
+                                        placeholder="0.00"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Interactive Modern Result Panel */}
+                        <div className="bg-zinc-950 text-white p-6 rounded-2xl shadow-xl border border-zinc-800 relative overflow-hidden">
+                            <div className="absolute right-0 top-0 opacity-10 pointer-events-none transform translate-x-4 -translate-y-4">
+                                <i data-lucide="calculator" className="w-48 h-48"></i>
+                            </div>
+                            
+                            <h3 className="text-xs font-bold text-crom-neon uppercase tracking-widest mb-4">Cálculo Automático</h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 relative z-10">
+                                <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                                    <p className="text-xs text-slate-400 uppercase font-medium">Líquido Final</p>
+                                    <div className="flex items-baseline gap-2 mt-1">
+                                        <span className="text-3xl font-black font-mono text-crom-yellow">{litrosLiquidos.toFixed(2)}</span>
+                                        <span className="text-sm font-bold text-crom-yellow">Litros</span>
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 mt-1">Descontados {(lBrutosNum - litrosLiquidos).toFixed(1)}L de impureza</p>
+                                </div>
+                                <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                                    <p className="text-xs text-slate-400 uppercase font-medium">Valor Total da Coleta</p>
+                                    <p className="text-3xl font-black font-mono text-emerald-400 mt-1">
+                                        {formatCurrency(valorTotal)}
+                                    </p>
+                                    <p className="text-[10px] text-slate-500 mt-1">Faturamento real do ponto</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="mt-6 pt-4 border-t border-slate-100">
+                        <button 
+                            onClick={handleSave}
+                            className="w-full py-4.5 bg-crom-lightGreen hover:bg-crom-green text-white text-lg font-black rounded-xl shadow-lg shadow-green-900/10 hover:shadow-xl transition-all flex items-center justify-center gap-3 active:scale-[0.98]"
+                        >
+                            <i data-lucide="check-circle" className="w-5 h-5 text-crom-neon"></i>
+                            SALVAR COLETAS NO DISPOSITIVO
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // --- Screen 2: Histórico com Fechamento Dinâmico ---
+        const HistoricoScreen = ({ compras, fechamentos, onDeleteCompra, onRealizarFechamento, onDeleteFechamento, onOpenWhatsAppShare, customAlert, customConfirm, customPrompt }) => {
+            const [search, setSearch] = useState('');
+            const [activeSubTab, setActiveSubTab] = useState('ativas');
+            const [expandedFechamento, setExpandedFechamento] = useState(null);
+
+            // Filter active coletas by supplier
+            const activeColetas = useMemo(() => {
+                return compras.filter(c => {
+                    const status = c.status || 'aberto'; 
+                    return status === 'aberto' && c.fornecedor.toLowerCase().includes(search.toLowerCase());
+                });
+            }, [compras, search]);
+
+            const activeTotals = useMemo(() => {
+                return activeColetas.reduce((acc, curr) => {
+                    acc.litrosBrutos += curr.litrosBrutos;
+                    acc.litrosLiquidos += curr.litrosLiquidos;
+                    acc.total += curr.valorTotal;
+                    return acc;
+                }, { litrosBrutos: 0, litrosLiquidos: 0, total: 0 });
+            }, [activeColetas]);
+
+            const handleCloseDay = async () => {
+                if (activeColetas.length === 0) {
+                    customAlert("Sem Coletas", "Não há nenhuma coleta ativa aberta para fechar.");
+                    return;
+                }
+
+                // Calculate suggested Weekly or Range name
+                const firstDateFormatted = formatDate(activeColetas.map(c => c.data).sort().shift());
+                const lastDateFormatted = formatDate(activeColetas.map(c => c.data).sort().pop());
+                const periodoSugestao = firstDateFormatted === lastDateFormatted ? `Fechamento ${firstDateFormatted}` : `Semana de ${firstDateFormatted} a ${lastDateFormatted}`;
+
+                // Chamando o modal customizado de Prompt
+                const customPeriod = await customPrompt(
+                    "Finalizar e Fechar Período", 
+                    `Deseja finalizar o lote atual com ${activeColetas.length} coletas?\nConfirme ou ajuste o nome do Lote Semanal abaixo:`, 
+                    periodoSugestao
+                );
+                
+                if (customPeriod !== null && customPeriod.trim() !== '') {
+                    onRealizarFechamento(activeColetas, customPeriod.trim());
+                    customAlert("Sucesso", "Lote fechado com sucesso!");
+                }
+            };
+
+            const handleDeleteColetaClick = async (id, fornecedor) => {
+                const confirmacao = await customConfirm("Deletar Coleta", `Deseja mesmo deletar a coleta do fornecedor "${fornecedor}"?`);
+                if (confirmacao) {
+                    onDeleteCompra(id);
+                }
+            };
+
+            const handleDeleteFechamentoClick = async (id, periodo) => {
+                const confirmacao = await customConfirm(
+                    "Excluir Fechamento", 
+                    `Deseja deletar o fechamento "${periodo}" permanentemente? As coletas dentro deste lote NÃO retornarão para a lista ativa.`
+                );
+                if (confirmacao) {
+                    onDeleteFechamento(id);
+                }
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    {/* Header */}
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 border-b border-slate-100 pb-4">
+                        <div>
+                            <span className="text-xs font-bold text-crom-lightGreen tracking-wider uppercase bg-green-50 px-3 py-1 rounded-full">CONTROLE DE LOTES</span>
+                            <h2 className="text-2xl font-black text-slate-800 mt-2">Histórico & Fechamentos</h2>
+                        </div>
+                        
+                        {/* Tab Switcher */}
+                        <div className="flex bg-slate-100 p-1 rounded-xl w-full sm:w-auto">
+                            <button
+                                onClick={() => setActiveSubTab('ativas')}
+                                className={`flex-1 sm:flex-initial px-4 py-2.5 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${activeSubTab === 'ativas' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                            >
+                                <i data-lucide="play" className="w-4 h-4"></i>
+                                Ativas ({compras.filter(c => (c.status || 'aberto') === 'aberto').length})
+                            </button>
+                            <button
+                                onClick={() => setActiveSubTab('fechadas')}
+                                className={`flex-1 sm:flex-initial px-4 py-2.5 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${activeSubTab === 'fechadas' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                            >
+                                <i data-lucide="archive" className="w-4 h-4"></i>
+                                Fechados ({fechamentos.length})
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Sub-tab Content: Active coletas */}
+                    {activeSubTab === 'ativas' && (
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                            {/* Search and Action Bar */}
+                            <div className="flex flex-col sm:flex-row gap-4 mb-4">
+                                <div className="relative flex-1">
+                                    <i data-lucide="search" className="w-5 h-5 absolute left-3 top-3 text-slate-400"></i>
+                                    <input 
+                                        type="text"
+                                        placeholder="Pesquisar coletas ativas..."
+                                        value={search}
+                                        onChange={(e) => setSearch(e.target.value)}
+                                        className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-crom-lightGreen text-sm"
+                                    />
+                                </div>
+                                
+                                {activeColetas.length > 0 && (
+                                    <button
+                                        onClick={handleCloseDay}
+                                        className="bg-crom-lightGreen hover:bg-crom-green text-white font-bold px-5 py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md transition-all active:scale-95"
+                                    >
+                                        <i data-lucide="lock" className="w-4.5 h-4.5 text-crom-neon"></i>
+                                        Finalizar e Fechar Período
+                                    </button>
+                                )}
+                            </div>
+
+                            {activeColetas.length > 0 && (
+                                <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3 px-4 mb-4 grid grid-cols-3 gap-2 text-xs font-bold text-slate-600">
+                                    <div>Total Bruto: <span className="font-mono text-slate-800 text-sm ml-1">{activeTotals.litrosBrutos.toFixed(1)}L</span></div>
+                                    <div>Total Líquido: <span className="font-mono text-crom-lightGreen text-sm ml-1">{activeTotals.litrosLiquidos.toFixed(2)}L</span></div>
+                                    <div>Custo Estimado: <span className="font-mono text-slate-800 text-sm ml-1">{formatCurrency(activeTotals.total)}</span></div>
+                                </div>
+                            )}
+
+                            {/* List */}
+                            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                                {activeColetas.length === 0 ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-slate-400 py-12">
+                                        <i data-lucide="clipboard-list" className="w-16 h-16 mb-3 opacity-30"></i>
+                                        <p className="text-base font-semibold">Nenhuma coleta ativa aberta no momento.</p>
+                                        <p className="text-xs text-slate-400 mt-1">Insira novas coletas no formulário principal.</p>
+                                    </div>
+                                ) : (
+                                    activeColetas.map((compra) => (
+                                        <div key={compra.id} className="bg-white border border-slate-100 hover:border-slate-200 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm transition-all hover:shadow-md animate-fadeIn">
+                                            <div className="flex-1">
+                                                <div className="flex flex-wrap items-center gap-2 mb-1">
+                                                    <span className="bg-slate-100 text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                                        {formatDate(compra.data)}
+                                                    </span>
+                                                    <span className="bg-emerald-50 text-crom-lightGreen text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                                                        <i data-lucide="user" className="w-3 h-3"></i> {compra.coletor}
+                                                    </span>
+                                                    <h4 className="font-extrabold text-slate-800 text-lg ml-1">{compra.fornecedor}</h4>
+                                                </div>
+                                                <div className="text-xs text-slate-500 grid grid-cols-3 gap-2 mt-2">
+                                                    <div>Bruto: <span className="font-mono font-bold text-slate-700">{compra.litrosBrutos}L</span></div>
+                                                    <div>Desconto: <span className="font-mono font-bold text-rose-500">{compra.desconto}%</span></div>
+                                                    <div>Líquido: <span className="font-mono font-bold text-crom-lightGreen">{compra.litrosLiquidos.toFixed(2)}L</span></div>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-100">
+                                                <div className="text-right">
+                                                    <p className="text-[10px] text-slate-400">{formatCurrency(compra.valorLitro)}/L</p>
+                                                    <p className="text-xl font-black text-slate-800 font-mono">{formatCurrency(compra.valorTotal)}</p>
+                                                </div>
+                                                
+                                                <div className="flex items-center gap-1">
+                                                    {/* WhatsApp Reciept trigger */}
+                                                    <button
+                                                        onClick={() => onOpenWhatsAppShare(compra)}
+                                                        className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all active:scale-90"
+                                                        title="Enviar Comprovante WhatsApp"
+                                                    >
+                                                        <svg className="w-5.5 h-5.5 fill-current" viewBox="0 0 24 24">
+                                                            <path d="M12.012 2c-5.506 0-9.989 4.478-9.99 9.984a9.96 9.96 0 0 0 1.333 4.993L2 22l5.13-1.347a9.95 9.95 0 0 0 4.88 1.275h.005c5.505 0 9.989-4.478 9.99-9.984A9.97 9.97 0 0 0 12.012 2zm5.835 14.156c-.32.9-.92 1.4-1.62 1.63-.44.15-.98.24-2.88-.5-2.28-.89-3.8-3.18-3.92-3.34-.11-.15-.97-1.28-.97-2.45 0-1.17.61-1.74.83-1.98.22-.24.48-.3.64-.3h.46c.12 0 .28-.01.44.37.16.39.56 1.36.61 1.46.05.11.08.24 0 .4-.08.16-.18.3-.35.49-.17.19-.36.33-.51.52-.16.19-.33.39-.14.72.19.33.84 1.38 1.8 2.23.96.85 1.77 1.11 2.08 1.24.31.13.5.11.69-.11.19-.22.8-.93 1.01-1.24.21-.3.42-.25.7-.15s1.8.85 2.11 1c.31.15.52.22.6.35.07.13.07.75-.25 1.65z"/>
+                                                        </svg>
+                                                    </button>
+
+                                                    <button 
+                                                        onClick={() => handleDeleteColetaClick(compra.id, compra.fornecedor)}
+                                                        className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all active:scale-90"
+                                                    >
+                                                        <i data-lucide="trash-2" className="w-5 h-5"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Sub-tab Content: Closed Batches */}
+                    {activeSubTab === 'fechadas' && (
+                        <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                            {fechamentos.length === 0 ? (
+                                <div className="h-full flex flex-col items-center justify-center text-slate-400 py-12">
+                                    <i data-lucide="archive" className="w-16 h-16 mb-3 opacity-30"></i>
+                                    <p className="text-base font-semibold">Nenhum lote finalizado ainda.</p>
+                                    <p className="text-xs text-slate-400 mt-1">Finalize as coletas ativas para arquivá-las aqui.</p>
+                                </div>
+                            ) : (
+                                fechamentos.map((f) => {
+                                    const isExpanded = expandedFechamento === f.id;
+                                    return (
+                                        <div key={f.id} className="bg-slate-50/50 border border-slate-200/70 rounded-xl overflow-hidden shadow-sm hover:border-slate-300 transition-all">
+                                            {/* Header of Batch card */}
+                                            <div className="p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white border-b border-slate-100">
+                                                <div className="flex-1">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="bg-slate-900 text-white text-[10px] font-bold px-2.5 py-0.5 rounded-full font-mono">
+                                                            LOTE #{f.id.slice(-6)}
+                                                        </span>
+                                                        <span className="text-xs text-slate-700 font-extrabold uppercase">
+                                                            {f.periodo || "Sem Período definido"}
+                                                        </span>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-3">
+                                                        <div>
+                                                            <p className="text-[10px] text-slate-400 uppercase font-bold">Total Litros</p>
+                                                            <p className="text-sm font-black text-slate-800 font-mono">{f.totalLitrosLiquidos.toFixed(2)} L</p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[10px] text-slate-400 uppercase font-bold">Média Desconto</p>
+                                                            <p className="text-sm font-black text-rose-500 font-mono">{f.descontoMedio.toFixed(1)} %</p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[10px] text-slate-400 uppercase font-bold">Faturamento Lote</p>
+                                                            <p className="text-sm font-black text-slate-800 font-mono">{formatCurrency(f.totalPago)}</p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[10px] text-slate-400 uppercase font-bold">Entregas</p>
+                                                            <p className="text-sm font-black text-crom-lightGreen font-mono">{f.qtdColetas} registradas</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                
+                                                <div className="flex items-center gap-2 self-stretch sm:self-auto justify-end border-t sm:border-0 pt-2 sm:pt-0 border-slate-100">
+                                                    <button
+                                                        onClick={() => setExpandedFechamento(isExpanded ? null : f.id)}
+                                                        className="flex items-center gap-1 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg transition-all"
+                                                    >
+                                                        <i data-lucide={isExpanded ? "eye-off" : "eye"} className="w-4 h-4"></i>
+                                                        {isExpanded ? "Ocultar" : "Ver Detalhes"}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeleteFechamentoClick(f.id, f.periodo)}
+                                                        className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                                        title="Apagar Fechamento"
+                                                    >
+                                                        <i data-lucide="trash-2" className="w-4.5 h-4.5"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {/* Expanded detail */}
+                                            {isExpanded && (
+                                                <div className="p-4 bg-slate-50 border-t border-slate-100 divide-y divide-slate-100 animate-slideDown">
+                                                    <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Coletas Integradas neste Fechamento</p>
+                                                    {f.coletas.map(item => (
+                                                        <div key={item.id} className="py-2.5 flex justify-between items-center text-xs font-semibold">
+                                                            <div>
+                                                                <p className="text-slate-800 font-bold">{item.fornecedor} <span className="text-[10px] text-slate-400 font-medium">({item.coletor})</span></p>
+                                                                <p className="text-[10px] text-slate-500 mt-0.5">Data Coleta: {formatDate(item.data)}</p>
+                                                            </div>
+                                                            <div className="text-right font-mono flex items-center gap-3">
+                                                                <div>
+                                                                    <p className="text-slate-700 font-bold">{item.litrosLiquidos.toFixed(2)}L <span className="text-[10px] text-slate-400">({item.desconto}% desc)</span></p>
+                                                                    <p className="text-crom-lightGreen font-bold">{formatCurrency(item.valorTotal)}</p>
+                                                                </div>
+                                                                {/* Share WhatsApp receipt of an archived item */}
+                                                                <button
+                                                                    onClick={() => onOpenWhatsAppShare(item)}
+                                                                    className="p-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded"
+                                                                    title="Comprovante de Lote por WhatsApp"
+                                                                >
+                                                                    <svg className="w-4.5 h-4.5 fill-current" viewBox="0 0 24 24">
+                                                                        <path d="M12.012 2c-5.506 0-9.989 4.478-9.99 9.984a9.96 9.96 0 0 0 1.333 4.993L2 22l5.13-1.347a9.95 9.95 0 0 0 4.88 1.275h.005c5.505 0 9.989-4.478 9.99-9.984A9.97 9.97 0 0 0 12.012 2zm5.835 14.156c-.32.9-.92 1.4-1.62 1.63-.44.15-.98.24-2.88-.5-2.28-.89-3.8-3.18-3.92-3.34-.11-.15-.97-1.28-.97-2.45 0-1.17.61-1.74.83-1.98.22-.24.48-.3.64-.3h.46c.12 0 .28-.01.44.37.16.39.56 1.36.61 1.46.05.11.08.24 0 .4-.08.16-.18.3-.35.49-.17.19-.36.33-.51.52-.16.19-.33.39-.14.72.19.33.84 1.38 1.8 2.23.96.85 1.77 1.11 2.08 1.24.31.13.5.11.69-.11.19-.22.8-.93 1.01-1.24.21-.3.42-.25.7-.15s1.8.85 2.11 1c.31.15.52.22.6.35.07.13.07.75-.25 1.65z"/>
+                                                                    </svg>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // --- Screen 3: Resumo Mensal ---
+        const ResumoScreen = ({ compras, fechamentos, customAlert }) => {
+            const [mesAno, setMesAno] = useState(() => {
+                const now = new Date();
+                return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            });
+
+            const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+            const [insightsReport, setInsightsReport] = useState("");
+
+            const stats = useMemo(() => {
+                const todasColetas = [
+                    ...compras,
+                    ...fechamentos.flatMap(f => f.coletas)
+                ];
+
+                const uniqueColetas = Array.from(new Map(todasColetas.map(item => [item.id, item])).values());
+                const coletasMes = uniqueColetas.filter(c => c.data.startsWith(mesAno));
+                
+                const totalBruto = coletasMes.reduce((acc, curr) => acc + curr.litrosBrutos, 0);
+                const totalLiquido = coletasMes.reduce((acc, curr) => acc + curr.litrosLiquidos, 0);
+                const totalPago = coletasMes.reduce((acc, curr) => acc + curr.valorTotal, 0);
+                
+                const descontoMedio = totalBruto > 0 
+                    ? ((totalBruto - totalLiquido) / totalBruto) * 100 
+                    : 0;
+
+                return {
+                    coletasMes,
+                    litrosBrutos: totalBruto,
+                    litrosComprados: totalLiquido,
+                    totalPago,
+                    qtdEntregas: coletasMes.length,
+                    descontoMedio
+                };
+            }, [compras, fechamentos, mesAno]);
+
+            const generateAiReport = async () => {
+                if (stats.coletasMes.length === 0) {
+                    customAlert("Relatório de IA", "Não há dados de coletas suficientes neste mês para gerar insights de IA.");
+                    return;
+                }
+
+                setIsGeneratingInsights(true);
+                try {
+                    const systemPrompt = "Você é o Analista Estratégico da CROM Reciclagem de Óleo. Analise a planilha resumida das coletas mensais de óleo vegetal fornecidas pelo usuário e gere um plano estratégico curto, preciso e focado no tablet (em formato Markdown amigável). Inclua previsões de rendimento e sugestões comerciais.";
+                    
+                    const userPrompt = `DADOS MENSAIS (${mesAno}):
+- Total Litros Brutos: ${stats.litrosBrutos} L
+- Total Litros Líquidos: ${stats.litrosComprados} L
+- Total Pago: R$ ${stats.totalPago}
+- Desconto Médio: ${stats.descontoMedio.toFixed(2)}%
+- Coletas efetuadas: ${stats.qtdEntregas}
+- Principais fornecedores coletados: ${stats.coletasMes.slice(0, 5).map(c => `${c.fornecedor} (${c.litrosLiquidos}L)`).join(", ")}`;
+
+                    const report = await callGeminiAPI(systemPrompt, userPrompt);
+                    setInsightsReport(report);
+                } catch (err) {
+                    console.error(err);
+                    customAlert("IA Fora do Ar", "Erro ao consultar o cérebro da inteligência artificial. Tente mais tarde.");
+                } finally {
+                    setIsGeneratingInsights(false);
+                }
+            };
+
+            const handleExportExcel = () => {
+                if (stats.coletasMes.length === 0) {
+                    customAlert("Exportar Excel", "Não existem registros para exportar neste mês.");
+                    return;
+                }
+
+                let csvContent = "\uFEFF";
+                csvContent += "Data;Fornecedor;Coletor;Litros Brutos (L);Desconto (%);Litros Liquidos (L);Valor p/ Litro (R$);Valor Total (R$)\n";
+
+                stats.coletasMes.forEach(c => {
+                    csvContent += `${formatDate(c.data)};${c.fornecedor};${c.coletor};${c.litrosBrutos.toString().replace('.', ',')};${c.desconto};${c.litrosLiquidos.toFixed(2).replace('.', ',')};${c.valorLitro.toFixed(2).replace('.', ',')};${c.valorTotal.toFixed(2).replace('.', ',')}\n`;
+                });
+
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `CROM_Relatorio_Mensal_${mesAno}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            const handlePrintPDF = () => {
+                window.print();
+            };
+
+            const formatMesAnoCompleto = (raw) => {
+                const [ano, mes] = raw.split('-');
+                const meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+                return `${meses[parseInt(mes) - 1]} de ${ano}`;
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    
+                    <div className="hidden print-title text-center">
+                        <h1 className="text-2xl font-black text-slate-900 uppercase tracking-widest">CROM - RECICLAGEM DE ÓLEO VEGETAL</h1>
+                        <p className="text-md text-slate-500 font-bold mt-1">Relatório Consolidado de Coletas — {formatMesAnoCompleto(mesAno)}</p>
+                        <hr className="my-5 border-slate-200"/>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4 border-b border-slate-100 pb-4 no-print">
+                        <div>
+                            <span className="text-xs font-bold text-crom-lightGreen tracking-wider uppercase bg-green-50 px-3 py-1 rounded-full">RELATÓRIOS</span>
+                            <h2 className="text-2xl font-black text-slate-800 mt-2">Resumo Consolidado</h2>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <input 
+                                type="month" 
+                                value={mesAno}
+                                onChange={(e) => setMesAno(e.target.value)}
+                                className="p-2.5 text-base border border-slate-200 rounded-xl focus:ring-2 focus:ring-crom-lightGreen outline-none text-slate-700 font-semibold"
+                            />
+                            
+                            <button 
+                                onClick={generateAiReport}
+                                disabled={isGeneratingInsights}
+                                className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 shadow-sm transition-all active:scale-95 disabled:opacity-50"
+                            >
+                                <span className="text-sm">✨</span>
+                                <span className="hidden md:inline">{isGeneratingInsights ? "Processando..." : "Insights CROM IA"}</span>
+                            </button>
+
+                            <button 
+                                onClick={handleExportExcel}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 shadow-sm transition-all active:scale-95"
+                                title="Exportar CSV"
+                            >
+                                <i data-lucide="file-spreadsheet" className="w-5 h-5"></i>
+                                <span className="hidden md:inline">Exportar Excel</span>
+                            </button>
+                            <button 
+                                onClick={handlePrintPDF}
+                                className="bg-slate-800 hover:bg-slate-900 text-white font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 shadow-sm transition-all active:scale-95"
+                                title="Imprimir PDF"
+                            >
+                                <i data-lucide="printer" className="w-5 h-5"></i>
+                                <span className="hidden md:inline">Imprimir / PDF</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Dashboard Metrics */}
+                    <div className="flex-1 overflow-y-auto pr-1">
+                        
+                        {/* IA Insights Container in Dashboard */}
+                        {insightsReport && (
+                            <div className="mb-6 bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-150 p-5 rounded-2xl shadow-sm relative overflow-hidden animate-fadeIn no-print">
+                                <div className="absolute right-4 top-4 text-slate-300">
+                                    <i data-lucide="sparkles" className="w-12 h-12 text-violet-300/40"></i>
+                                </div>
+                                <h3 className="text-xs font-black text-violet-800 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                                    <span>✨</span> Diagnóstico IA de Eficiência Operacional
+                                </h3>
+                                <div className="text-sm text-slate-700 space-y-2 leading-relaxed">
+                                    {insightsReport.split("\n").map((line, idx) => (
+                                        <p key={idx}>{line}</p>
+                                    ))}
+                                </div>
+                                <button 
+                                    onClick={() => setInsightsReport("")} 
+                                    className="mt-3 text-xs text-violet-600 font-bold hover:underline"
+                                >
+                                    Fechar relatório IA
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                            {/* Litros Líquidos */}
+                            <div className="bg-slate-50 border border-slate-200/60 p-5 rounded-2xl flex items-center gap-5 print-card">
+                                <div className="bg-crom-lightGreen text-white p-3.5 rounded-xl shadow-md shadow-green-900/10 no-print">
+                                    <i data-lucide="droplets" className="w-7 h-7"></i>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest mb-1">Total de Óleo Líquido</p>
+                                    <p className="text-3xl font-black font-mono text-slate-900 print-text-dark">{stats.litrosComprados.toFixed(2)} L</p>
+                                    <p className="text-[10px] text-slate-400 mt-1 font-bold no-print">Bruto: {stats.litrosBrutos.toFixed(1)} L</p>
+                                </div>
+                            </div>
+
+                            {/* Total Pago */}
+                            <div className="bg-slate-50 border border-slate-200/60 p-5 rounded-2xl flex items-center gap-5 print-card">
+                                <div className="bg-emerald-600 text-white p-3.5 rounded-xl shadow-md shadow-emerald-900/10 no-print">
+                                    <i data-lucide="dollar-sign" className="w-7 h-7"></i>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest mb-1">Total Pago Geral</p>
+                                    <p className="text-3xl font-black font-mono text-emerald-600 print-text-dark">{formatCurrency(stats.totalPago)}</p>
+                                    <p className="text-[10px] text-slate-400 mt-1 font-bold no-print">Valores consolidados</p>
+                                </div>
+                            </div>
+
+                            {/* Média de Desconto no Mês */}
+                            <div className="bg-slate-50 border border-slate-200/60 p-5 rounded-2xl flex items-center gap-5 print-card">
+                                <div className="bg-amber-500 text-white p-3.5 rounded-xl shadow-md shadow-amber-900/10 no-print">
+                                    <i data-lucide="percent" className="w-7 h-7"></i>
+                                </div>
+                                <div>
+                                    <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest mb-1">Média de Desconto</p>
+                                    <p className="text-3xl font-black font-mono text-amber-600 print-text-dark">{stats.descontoMedio.toFixed(1)} %</p>
+                                    <p className="text-[10px] text-slate-400 mt-1 font-bold no-print">Retenção de impurezas</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* List of Month Coletas */}
+                        <div>
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest">Coletas do Mês</h3>
+                                <span className="bg-slate-100 text-slate-600 text-xs px-2.5 py-1 rounded-full font-bold">
+                                    {stats.qtdEntregas} coletas realizadas
+                                </span>
+                            </div>
+                            
+                            {stats.coletasMes.length === 0 ? (
+                                <p className="text-slate-400 italic text-sm text-center py-6">Nenhuma coleta registrada para este mês.</p>
+                            ) : (
+                                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                    <table className="w-full text-left border-collapse print-card">
+                                        <thead>
+                                            <tr className="bg-slate-50 text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-200">
+                                                <th className="p-3 font-extrabold">Data</th>
+                                                <th className="p-3 font-extrabold">Fornecedor</th>
+                                                <th className="p-3 font-extrabold">Coletor</th>
+                                                <th className="p-3 font-extrabold text-right">L. Bruto</th>
+                                                <th className="p-3 font-extrabold text-right">Desc %</th>
+                                                <th className="p-3 font-extrabold text-right">L. Líquido</th>
+                                                <th className="p-3 font-extrabold text-right">Preço Unit.</th>
+                                                <th className="p-3 font-extrabold text-right">Valor Pago</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+                                            {stats.coletasMes.map((c) => (
+                                                <tr key={c.id} className="hover:bg-slate-50/50">
+                                                    <td className="p-3 font-mono">{formatDate(c.data)}</td>
+                                                    <td className="p-3 font-bold text-slate-800">{c.fornecedor}</td>
+                                                    <td className="p-3 font-semibold text-slate-600">{c.coletor}</td>
+                                                    <td className="p-3 text-right font-mono">{c.litrosBrutos} L</td>
+                                                    <td className="p-3 text-right text-rose-500 font-mono font-bold">{c.desconto}%</td>
+                                                    <td className="p-3 text-right font-mono font-bold text-crom-lightGreen">{c.litrosLiquidos.toFixed(2)} L</td>
+                                                    <td className="p-3 text-right font-mono">{formatCurrency(c.valorLitro)}</td>
+                                                    <td className="p-3 text-right font-mono font-bold">{formatCurrency(c.valorTotal)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Screen 4: ✨ CROM IA Assistant Panel ---
+        const CromIaScreen = () => {
+            const [messages, setMessages] = useState([
+                { sender: 'ia', text: "Olá! Sou a Inteligência Artificial da CROM Reciclagem de Óleo. Posso te ajudar com dúvidas de campo sobre filtragem, decantação de óleo, logística, acidez, rendimento de biocombustível ou problemas técnicos na coleta de óleo vegetal. Como posso te apoiar hoje?" }
+            ]);
+            const [input, setInput] = useState('');
+            const [isResponding, setIsResponding] = useState(false);
+            const chatEndRef = useRef(null);
+
+            useEffect(() => {
+                chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [messages]);
+
+            const handleSend = async () => {
+                if (!input.trim() || isResponding) return;
+
+                const userText = input.trim();
+                setMessages(prev => [...prev, { sender: 'user', text: userText }]);
+                setInput('');
+                setIsResponding(true);
+
+                try {
+                    const systemPrompt = "Você é a Inteligência Artificial assistente especialista da empresa CROM Reciclagem de Óleo Vegetal. Responda de forma clara, técnica, mas acessível para trabalhadores e coletores no tablet. Seu foco principal é a logística de descarte, separação de impurezas, acidez, gordura, química básica de reutilização do óleo ou rendimento de biodiesel.";
+                    const answer = await callGeminiAPI(systemPrompt, userText);
+                    setMessages(prev => [...prev, { sender: 'ia', text: answer }]);
+                } catch (err) {
+                    console.error(err);
+                    setMessages(prev => [...prev, { sender: 'ia', text: "Houve um erro temporário de conectividade. Por favor, tente enviar novamente." }]);
+                } finally {
+                    setIsResponding(false);
+                }
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                    <div className="mb-4 pb-2 border-b">
+                        <span className="text-xs font-bold text-violet-600 tracking-wider uppercase bg-violet-50 px-3 py-1 rounded-full">SUPORTE DE CAMPO</span>
+                        <h2 className="text-2xl font-black text-slate-800 mt-2">✨ CROM Inteligência Artificial</h2>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto space-y-4 pr-1 mb-4">
+                        {messages.map((m, idx) => (
+                            <div key={idx} className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[80%] rounded-2xl p-4 text-sm leading-relaxed ${
+                                    m.sender === 'user' 
+                                    ? 'bg-zinc-900 text-white rounded-tr-none' 
+                                    : 'bg-slate-100 text-slate-800 rounded-tl-none border border-slate-200'
+                                }`}>
+                                    {m.sender === 'ia' && (
+                                        <div className="text-[10px] font-black text-violet-700 uppercase tracking-widest mb-1 flex items-center gap-1">
+                                            <span>✨</span> Assistente IA
+                                        </div>
+                                    )}
+                                    <p className="whitespace-pre-line">{m.text}</p>
+                                </div>
+                            </div>
+                        ))}
+                        {isResponding && (
+                            <div className="flex justify-start">
+                                <div className="bg-slate-100 rounded-2xl rounded-tl-none p-4 border border-slate-200 flex items-center gap-2">
+                                    <div className="flex gap-1">
+                                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
+                                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce [animation-delay:0.2s]"></div>
+                                        <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce [animation-delay:0.4s]"></div>
+                                    </div>
+                                    <span className="text-xs text-slate-500 font-semibold">CROM IA está formulando resposta...</span>
+                                </div>
+                            </div>
+                        )}
+                        <div ref={chatEndRef}></div>
+                    </div>
+
+                    <div className="flex gap-2 border-t pt-4">
+                        <input
+                            type="text"
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
+                            placeholder="Pergunte sobre logística, acidez, refino, tratamento..."
+                            className="flex-1 p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-crom-lightGreen text-sm"
+                        />
+                        <button
+                            onClick={handleSend}
+                            disabled={!input.trim() || isResponding}
+                            className="bg-zinc-900 hover:bg-black text-white px-5 rounded-xl transition-all font-black flex items-center gap-2 text-sm disabled:opacity-40"
+                        >
+                            <span>✨ Enviar</span>
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // --- Main App Component ---
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('nova');
+            const [compras, setCompras] = useState([]);
+            const [fechamentos, setFechamentos] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const fileInputRef = useRef(null);
+
+            // WhatsApp Share Modal States
+            const [showShareModal, setShowShareModal] = useState(false);
+            const [phoneForShare, setPhoneForShare] = useState('');
+            const [coletaToShare, setColetaToShare] = useState(null);
+
+            // NEW: Custom Modal states for robust iframe dialogue
+            const [modalConfig, setModalConfig] = useState(null);
+            const [promptValue, setPromptValue] = useState('');
+
+            // Dialogue Handlers
+            const customAlert = (title, message) => {
+                return new Promise((resolve) => {
+                    setModalConfig({
+                        type: 'alert',
+                        title,
+                        message,
+                        onConfirm: () => {
+                            setModalConfig(null);
+                            resolve();
+                        }
+                    });
+                });
+            };
+
+            const customConfirm = (title, message) => {
+                return new Promise((resolve) => {
+                    setModalConfig({
+                        type: 'confirm',
+                        title,
+                        message,
+                        onConfirm: () => {
+                            setModalConfig(null);
+                            resolve(true);
+                        },
+                        onCancel: () => {
+                            setModalConfig(null);
+                            resolve(false);
+                        }
+                    });
+                });
+            };
+
+            const customPrompt = (title, message, defaultValue = '') => {
+                setPromptValue(defaultValue);
+                return new Promise((resolve) => {
+                    setModalConfig({
+                        type: 'prompt',
+                        title,
+                        message,
+                        onConfirm: (val) => {
+                            setModalConfig(null);
+                            resolve(val);
+                        },
+                        onCancel: () => {
+                            setModalConfig(null);
+                            resolve(null);
+                        }
+                    });
+                });
+            };
+
+            // Load offline data on startup
+            useEffect(() => {
+                const loadData = async () => {
+                    try {
+                        const savedCompras = await store.getItem('compras_lista');
+                        const savedFechamentos = await store.getItem('fechamentos_lista');
+                        
+                        // AUTO-MIGRATION (Bug Fix for 'Não Fecha' issue)
+                        // This ensures all legacy items have status: 'aberto' so they don't get stuck!
+                        if (savedCompras) {
+                            const migrated = savedCompras.map(c => ({
+                                ...c,
+                                status: c.status || 'aberto'
+                            }));
+                            setCompras(migrated);
+                        }
+                        if (savedFechamentos) {
+                            setFechamentos(savedFechamentos);
+                        }
+                    } catch (err) {
+                        console.error("Erro ao carregar dados offline:", err);
+                    } finally {
+                        setLoading(false);
+                    }
+                };
+                loadData();
+            }, []);
+
+            // Re-render Lucide icons on view changes
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [activeTab, compras, fechamentos, loading, showShareModal, modalConfig]);
+
+            const sugerirColetores = useMemo(() => {
+                const deAbertas = compras.map(c => c.coletor);
+                const deFechadas = fechamentos.flatMap(f => f.coletas.map(c => c.coletor));
+                const todos = [...deAbertas, ...deFechadas].filter(Boolean);
+                return Array.from(new Set(todos)).slice(0, 5);
+            }, [compras, fechamentos]);
+
+            const handleSaveCompra = async (novaCompra) => {
+                const updatedList = [...compras, novaCompra];
+                setCompras(updatedList);
+                try {
+                    await store.setItem('compras_lista', updatedList);
+                    const btn = document.querySelector('button');
+                    if (btn) {
+                        const originalText = btn.innerHTML;
+                        btn.innerHTML = '<i data-lucide="check" class="w-5 h-5"></i> SALVO COM SUCESSO!';
+                        btn.classList.add('bg-emerald-500');
+                        if (window.lucide) window.lucide.createIcons();
+                        setTimeout(() => {
+                            btn.innerHTML = originalText;
+                            btn.classList.remove('bg-emerald-500');
+                            if (window.lucide) window.lucide.createIcons();
+                        }, 1800);
+                    }
+                } catch (err) {
+                    console.error("Erro ao salvar offline:", err);
+                    customAlert("Erro", "Erro ao gravar dados offline.");
+                }
+            };
+
+            const handleDeleteCompra = async (id) => {
+                const updatedList = compras.filter(c => c.id !== id);
+                setCompras(updatedList);
+                try {
+                    await store.setItem('compras_lista', updatedList);
+                } catch (err) {
+                    console.error("Erro ao deletar:", err);
+                }
+            };
+
+            const handleRealizarFechamento = async (coletasParaFechar, customPeriodName) => {
+                const idsParaFechar = coletasParaFechar.map(c => c.id);
+                const dataAtual = new Date().toISOString().split('T')[0];
+                const closureId = Date.now().toString();
+
+                const totalBruto = coletasParaFechar.reduce((acc, curr) => acc + curr.litrosBrutos, 0);
+                const totalLiquido = coletasParaFechar.reduce((acc, curr) => acc + curr.litrosLiquidos, 0);
+                const totalPago = coletasParaFechar.reduce((acc, curr) => acc + curr.valorTotal, 0);
+                const descontoMedio = totalBruto > 0 ? ((totalBruto - totalLiquido) / totalBruto) * 100 : 0;
+
+                const novoFechamento = {
+                    id: closureId,
+                    dataFechamento: dataAtual,
+                    periodo: customPeriodName, // Custom semanal ou mensal name
+                    totalLitrosBrutos: totalBruto,
+                    totalLitrosLiquidos: totalLiquido,
+                    totalPago,
+                    descontoMedio,
+                    qtdColetas: coletasParaFechar.length,
+                    coletas: coletasParaFechar.map(c => ({ ...c, status: 'fechado', fechamentoId: closureId }))
+                };
+
+                const updatedCompras = compras.map(c => {
+                    if (idsParaFechar.includes(c.id)) {
+                        return { ...c, status: 'fechado', fechamentoId: closureId };
+                    }
+                    return { ...c, status: c.status || 'aberto' };
+                });
+
+                const updatedFechamentos = [...fechamentos, novoFechamento];
+
+                setCompras(updatedCompras);
+                setFechamentos(updatedFechamentos);
+
+                try {
+                    await store.setItem('compras_lista', updatedCompras);
+                    await store.setItem('fechamentos_lista', updatedFechamentos);
+                } catch (err) {
+                    console.error("Erro ao salvar fechamento:", err);
+                }
+            };
+
+            const handleDeleteFechamento = async (id) => {
+                const updatedFechamentos = fechamentos.filter(f => f.id !== id);
+                const updatedCompras = compras.filter(c => c.fechamentoId !== id);
+                
+                setFechamentos(updatedFechamentos);
+                setCompras(updatedCompras);
+
+                try {
+                    await store.setItem('fechamentos_lista', updatedFechamentos);
+                    await store.setItem('compras_lista', updatedCompras);
+                } catch (err) {
+                    console.error("Erro ao deletar lote:", err);
+                }
+            };
+
+            const handleExportBackup = () => {
+                const dump = { compras, fechamentos };
+                const dataStr = JSON.stringify(dump, null, 2);
+                const blob = new Blob([dataStr], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                const now = new Date().toISOString().split('T')[0];
+                link.setAttribute("href", url);
+                link.setAttribute("download", `BACKUP_CROM_TOTAL_${now}.json`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            const handleImportBackup = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        const parsedData = JSON.parse(e.target.result);
+                        if (parsedData.compras || parsedData.fechamentos) {
+                            const confirmacao = await customConfirm("Sobregravar Banco", "Isso irá substituir TODOS os dados do tablet. Deseja continuar?");
+                            if (confirmacao) {
+                                const newCompras = parsedData.compras || [];
+                                const newFechamentos = parsedData.fechamentos || [];
+                                setCompras(newCompras);
+                                setFechamentos(newFechamentos);
+                                await store.setItem('compras_lista', newCompras);
+                                await store.setItem('fechamentos_lista', newFechamentos);
+                                customAlert("Sucesso", "Banco de dados do tablet restaurado com sucesso!");
+                            }
+                        } else {
+                            customAlert("Falha no Backup", "O arquivo selecionado não contém uma estrutura de backup CROM válida.");
+                        }
+                    } catch (err) {
+                        customAlert("Erro", "Erro ao ler o arquivo de backup.");
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            // WhatsApp Share Trigger
+            const triggerWhatsAppShare = (coleta) => {
+                setColetaToShare(coleta);
+                setShowShareModal(true);
+            };
+
+            const handleSendWhatsApp = () => {
+                if (!phoneForShare.trim() || !coletaToShare) return;
+
+                // Strip non-numbers from phone
+                const cleanedPhone = phoneForShare.replace(/\D/g, '');
+                
+                const messageText = 
+`*CROM RECICLAGEM DE ÓLEO* 🌿
+*COMPROVANTE DE COLETA*
+
+📅 *Data:* ${formatDate(coletaToShare.data)}
+👤 *Coletor:* ${coletaToShare.coletor}
+🏢 *Fornecedor:* ${coletaToShare.fornecedor}
+
+🛢️ *Litros Brutos:* ${coletaToShare.litrosBrutos} L
+📉 *Desconto:* ${coletaToShare.desconto}% (impurezas)
+💧 *Litros Líquidos:* ${coletaToShare.litrosLiquidos.toFixed(2)} L
+💵 *Preço por Litro:* ${formatCurrency(coletaToShare.valorLitro)}
+💰 *TOTAL LIQUIDO:* ${formatCurrency(coletaToShare.valorTotal)}
+
+_Obrigado por colaborar com o meio ambiente e a reciclagem vegetal!_ 🌎`;
+
+                const url = `https://api.whatsapp.com/send?phone=55${cleanedPhone}&text=${encodeURIComponent(messageText)}`;
+                window.open(url, '_blank');
+                setShowShareModal(false);
+                setPhoneForShare('');
+            };
+
+            if (loading) {
+                return (
+                    <div className="h-full w-full flex flex-col items-center justify-center text-crom-lightGreen bg-slate-950">
+                        <svg className="animate-spin h-12 w-12 mb-4 text-crom-neon" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span className="font-bold text-xl tracking-widest text-white">CROM RECICLAGEM</span>
+                        <span className="text-xs text-slate-500 mt-1 font-semibold">Carregando módulo offline industrial...</span>
+                    </div>
+                );
+            }
+
+            const NavItem = ({ id, icon, label, isAi = false }) => (
+                <button
+                    onClick={() => setActiveTab(id)}
+                    className={`w-full flex items-center gap-4 p-4 rounded-xl transition-all duration-150 active:scale-95 ${
+                        activeTab === id 
+                        ? isAi 
+                          ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-lg font-black'
+                          : 'bg-crom-lightGreen text-white shadow-lg shadow-black/10 font-black' 
+                        : 'text-slate-400 hover:bg-white/5 hover:text-white font-bold'
+                    }`}
+                >
+                    {isAi ? (
+                        <span className="text-lg">✨</span>
+                    ) : (
+                        <i data-lucide={icon} className={`w-5.5 h-5.5 ${activeTab === id ? 'text-crom-yellow' : 'text-slate-400'}`}></i>
+                    )}
+                    <span className="text-base tracking-wide">{label}</span>
+                </button>
+            );
+
+            return (
+                <div className="flex w-full h-full bg-slate-100 relative">
+                    <input 
+                        type="file" 
+                        ref={fileInputRef} 
+                        onChange={handleImportBackup} 
+                        accept=".json" 
+                        className="hidden" 
+                    />
+
+                    {/* NEW: Global Custom Modal System (Alert/Confirm/Prompt) */}
+                    {modalConfig && (
+                        <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-fadeIn">
+                            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-100 flex flex-col gap-4">
+                                <div className="border-b pb-2 flex items-center gap-2">
+                                    <span className="text-crom-lightGreen">🌿</span>
+                                    <h4 className="text-lg font-extrabold text-slate-900">{modalConfig.title}</h4>
+                                </div>
+                                <p className="text-sm text-slate-600 font-medium whitespace-pre-line">{modalConfig.message}</p>
+                                
+                                {modalConfig.type === 'prompt' && (
+                                    <input 
+                                        type="text" 
+                                        value={promptValue}
+                                        onChange={(e) => setPromptValue(e.target.value)}
+                                        className="w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-crom-lightGreen font-bold text-slate-800"
+                                        placeholder="Ex: Semana de 18/06 a 25/06"
+                                    />
+                                )}
+
+                                <div className="flex justify-end gap-2 mt-2">
+                                    {(modalConfig.type === 'confirm' || modalConfig.type === 'prompt') && (
+                                        <button 
+                                            onClick={() => modalConfig.onCancel()} 
+                                            className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold text-sm transition-colors active:scale-95"
+                                        >
+                                            Cancelar
+                                        </button>
+                                    )}
+                                    <button 
+                                        onClick={() => {
+                                            if (modalConfig.type === 'prompt') {
+                                                modalConfig.onConfirm(promptValue);
+                                            } else {
+                                                modalConfig.onConfirm();
+                                            }
+                                        }} 
+                                        className="px-5 py-2.5 rounded-xl bg-crom-lightGreen hover:bg-crom-green text-white font-bold text-sm shadow transition-colors active:scale-95"
+                                    >
+                                        Confirmar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* WhatsApp Comprovante Share Modal */}
+                    {showShareModal && (
+                        <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-100 animate-scaleIn">
+                                <div className="flex justify-between items-center mb-4 pb-2 border-b">
+                                    <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                                        <svg className="w-6 h-6 fill-emerald-500" viewBox="0 0 24 24">
+                                            <path d="M12.012 2c-5.506 0-9.989 4.478-9.99 9.984a9.96 9.96 0 0 0 1.333 4.993L2 22l5.13-1.347a9.95 9.95 0 0 0 4.88 1.275h.005c5.505 0 9.989-4.478 9.99-9.984A9.97 9.97 0 0 0 12.012 2zm5.835 14.156c-.32.9-.92 1.4-1.62 1.63-.44.15-.98.24-2.88-.5-2.28-.89-3.8-3.18-3.92-3.34-.11-.15-.97-1.28-.97-2.45 0-1.17.61-1.74.83-1.98.22-.24.48-.3.64-.3h.46c.12 0 .28-.01.44.37.16.39.56 1.36.61 1.46.05.11.08.24 0 .4-.08.16-.18.3-.35.49-.17.19-.36.33-.51.52-.16.19-.33.39-.14.72.19.33.84 1.38 1.8 2.23.96.85 1.77 1.11 2.08 1.24.31.13.5.11.69-.11.19-.22.8-.93 1.01-1.24.21-.3.42-.25.7-.15s1.8.85 2.11 1c.31.15.52.22.6.35.07.13.07.75-.25 1.65z"/>
+                                        </svg>
+                                        Enviar Comprovante de Coleta
+                                    </h3>
+                                    <button onClick={() => setShowShareModal(false)} className="text-slate-400 hover:text-slate-600 font-extrabold text-sm p-1">X</button>
+                                </div>
+                                <div className="space-y-4">
+                                    <label className="block text-xs font-bold text-slate-500 uppercase">DDD + Celular (WhatsApp)</label>
+                                    <input 
+                                        type="tel"
+                                        placeholder="Ex: 11999998888"
+                                        value={phoneForShare}
+                                        onChange={(e) => setPhoneForShare(e.target.value)}
+                                        className="w-full p-4 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none text-base font-bold text-slate-800"
+                                    />
+                                    
+                                    <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 text-xs font-medium font-mono text-slate-600 max-h-48 overflow-y-auto">
+                                        <p className="font-bold text-slate-800 mb-2">📋 Visualização do Comprovante:</p>
+                                        {coletaToShare && (
+                                            <div className="whitespace-pre-line">
+                                                {`*CROM RECICLAGEM* 🌿
+*COMPROVANTE DE COLETA*
+Data: ${formatDate(coletaToShare.data)}
+Coletor: ${coletaToShare.coletor}
+Fornecedor: ${coletaToShare.fornecedor}
+Litros Brutos: ${coletaToShare.litrosBrutos} L
+Desconto: ${coletaToShare.desconto}%
+Litros Líquidos: ${coletaToShare.litrosLiquidos.toFixed(2)} L
+Preço/L: ${formatCurrency(coletaToShare.valorLitro)}
+TOTAL: ${formatCurrency(coletaToShare.valorTotal)}`}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <button
+                                        onClick={handleSendWhatsApp}
+                                        disabled={!phoneForShare.trim()}
+                                        className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                                    >
+                                        Abrir WhatsApp no Tablet
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Sidebar */}
+                    <aside className="w-72 bg-zinc-950 shadow-2xl flex flex-col z-10 flex-shrink-0 no-print border-r border-white/5">
+                        <Logo />
+                        
+                        <nav className="flex-1 p-4 space-y-2 mt-4">
+                            <NavItem id="nova" icon="plus-circle" label="Nova Coleta" />
+                            <NavItem id="historico" icon="list" label="Histórico & Lotes" />
+                            <NavItem id="resumo" icon="bar-chart-2" label="Resumo Consolidado" />
+                            <NavItem id="ia" label="CROM Inteligência" isAi={true} />
+                        </nav>
+
+                        {/* Backup & Recovery Controls */}
+                        <div className="p-4 border-t border-white/5 space-y-2">
+                            <p className="text-slate-500 text-[10px] uppercase font-extrabold tracking-widest text-center">Proteção de Dados</p>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button 
+                                    onClick={handleExportBackup}
+                                    className="p-3 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold flex flex-col items-center justify-center gap-1.5 transition-all active:scale-95"
+                                    title="Exportar backup"
+                                >
+                                    <i data-lucide="download" className="w-4 h-4 text-crom-neon"></i>
+                                    Backup
+                                </button>
+                                <button 
+                                    onClick={() => fileInputRef.current.click()}
+                                    className="p-3 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold flex flex-col items-center justify-center gap-1.5 transition-all active:scale-95"
+                                    title="Restaurar dados"
+                                >
+                                    <i data-lucide="upload" className="w-4 h-4 text-crom-yellow"></i>
+                                    Restaurar
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="p-4 text-center text-slate-600 text-[10px] border-t border-white/5 font-semibold">
+                            Dispositivo Protegido • Offline<br/>
+                            v5.1 (Tablet Industrial + Comprovante WhatsApp)
+                        </div>
+                    </aside>
+
+                    {/* Main Content Area */}
+                    <main className="flex-1 p-6 overflow-hidden flex flex-col relative">
+                        {activeTab === 'nova' && (
+                            <NovaCompraScreen 
+                                onSave={handleSaveCompra} 
+                                sugerirColetores={sugerirColetores} 
+                                onOpenWhatsAppShare={triggerWhatsAppShare} 
+                                customAlert={customAlert}
+                                customConfirm={customConfirm}
+                            />
+                        )}
+                        {activeTab === 'historico' && (
+                            <HistoricoScreen 
+                                compras={compras} 
+                                fechamentos={fechamentos}
+                                onDeleteCompra={handleDeleteCompra} 
+                                onRealizarFechamento={handleRealizarFechamento}
+                                onDeleteFechamento={handleDeleteFechamento}
+                                onOpenWhatsAppShare={triggerWhatsAppShare}
+                                customAlert={customAlert}
+                                customConfirm={customConfirm}
+                                customPrompt={customPrompt}
+                            />
+                        )}
+                        {activeTab === 'resumo' && <ResumoScreen compras={compras} fechamentos={fechamentos} customAlert={customAlert} />}
+                        {activeTab === 'ia' && <CromIaScreen />}
+                    </main>
+                </div>
+            );
+        };
+
+        // Render React Application
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+    </script>
+</body>
+</html>
