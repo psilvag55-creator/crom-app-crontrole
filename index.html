@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CROM - Controle de Óleo</title>
+    
+    <!-- PWA Meta Tags -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><defs><linearGradient id='grad' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' style='stop-color:%231b4332;stop-opacity:1'/><stop offset='100%' style='stop-color:%232d6a4f;stop-opacity:1'/></linearGradient></defs><rect width='192' height='192' fill='url(%23grad)'/><path d='M96 28c-18.9 34-28 54-28 70 0 18.75 15.67 34 34 34s34-15.25 34-34c0-16-9.1-36-28-70z' fill='%23ffb703'/><circle cx='78' cy='48' r='16' fill='rgba(255,255,255,0.3)'/><circle cx='110' cy='72' r='12' fill='%2352b788'/><text x='96' y='130' font-size='36' font-weight='bold' fill='white' text-anchor='middle' font-family='system-ui'>CROM</text></svg>">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><defs><linearGradient id='grad' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' style='stop-color:%231b4332;stop-opacity:1'/><stop offset='100%' style='stop-color:%232d6a4f;stop-opacity:1'/></linearGradient></defs><rect width='192' height='192' fill='url(%23grad)'/><path d='M96 28c-18.9 34-28 54-28 70 0 18.75 15.67 34 34 34s34-15.25 34-34c0-16-9.1-36-28-70z' fill='%23ffb703'/><circle cx='78' cy='48' r='16' fill='rgba(255,255,255,0.3)'/><circle cx='110' cy='72' r='12' fill='%2352b788'/><text x='96' y='130' font-size='36' font-weight='bold' fill='white' text-anchor='middle' font-family='system-ui'>CROM</text></svg>">
+    <meta name="theme-color" content="#1b4332">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CROM">
+    <meta name="description" content="App de controle industrial para reciclagem de óleo vegetal com IA integrada">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM (Production) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX compilation in browser -->
+    <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+    <!-- LocalForage for Offline Storage -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').catch(err => {
+                    console.log('SW registration failed:', err);
+                });
+            });
+        }
+        
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        crom: {
+                            green: '#1b4332',
+                            lightGreen: '#2d6a4f',
+                            neon: '#52b788',
+                            yellow: '#ffb703',
+                            zincDark: '#09090b',
+                            bg: '#f8fafc'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: #f8fafc;
+            overscroll-behavior-y: contain; 
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            user-select: none;
+        }
+        #root {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 99px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+        input, button, select {
+            min-height: 48px;
+        }
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+        @media print {
+            aside, .no-print, button, input {
+                display: none !important;
+            }
+            main {
+                padding: 0 !important;
+                margin: 0 !important;
+                width: 100% !important;
+                overflow: visible !important;
+                background: white !important;
+            }
+            .print-full-width {
+                width: 100% !important;
+                box-shadow: none !important;
+                border: 1px solid #e2e8f0 !important;
+                background: white !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="env,react">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // Initialize LocalForage instances
+        const store = localforage.createInstance({ name: "CromControleApp_v5" });
+
+        // --- Gemini API Config & Integration ---
+        const apiKey = "";
+
+        const callGeminiAPI = async (systemPrompt, userPrompt, useJson = false, jsonSchema = null) => {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: userPrompt }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] }
+            };
+
+            if (useJson && jsonSchema) {
+                payload.generationConfig = {
+                    responseMimeType: "application/json",
+                    responseSchema: jsonSchema
+                };
+            }
+
+            const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const retries = 5;
+            let currentDelay = 1000;
+
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`Status: ${response.status}`);
+                    const result = await response.json();
+                    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (text) return text;
+                    throw new Error("Resposta inválida da API.");
+                } catch (error) {
+                    if (i === retries - 1) throw error;
+                    await delay(currentDelay);
+                    currentDelay *= 2;
+                }
+            }
+        };
+
+        // --- Helper Functions ---
+        const formatCurrency = (value) => {
+            return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value || 0);
+        };
+
+        const formatDate = (dateString) => {
+            if (!dateString) return '';
+            const [year, month, day] = dateString.split('-');
+            return `${day}/${month}/${year}`;
+        };
+
+        // --- Main App Component ---
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('nova');
+            const [compras, setCompras] = useState([]);
+            const [fechamentos, setFechamentos] = useState([]);
+
+            // Load data from localStorage on mount
+            useEffect(() => {
+                const loadData = async () => {
+                    try {
+                        const savedCompras = await store.getItem('compras') || [];
+                        const savedFechamentos = await store.getItem('fechamentos') || [];
+                        setCompras(savedCompras);
+                        setFechamentos(savedFechamentos);
+                    } catch (err) {
+                        console.error('Erro ao carregar dados:', err);
+                    }
+                };
+                loadData();
+            }, []);
+
+            // Save compras to localStorage
+            useEffect(() => {
+                store.setItem('compras', compras);
+            }, [compras]);
+
+            // Save fechamentos to localStorage
+            useEffect(() => {
+                store.setItem('fechamentos', fechamentos);
+            }, [fechamentos]);
+
+            const handleSaveCompra = (novaCompra) => {
+                setCompras([...compras, novaCompra]);
+            };
+
+            const handleDeleteCompra = (id) => {
+                setCompras(compras.filter(c => c.id !== id));
+            };
+
+            const handleRealizarFechamento = (coletas, periodo) => {
+                const totalLitrosLiquidos = coletas.reduce((acc, c) => acc + c.litrosLiquidos, 0);
+                const totalPago = coletas.reduce((acc, c) => acc + c.valorTotal, 0);
+                const totalBruto = coletas.reduce((acc, c) => acc + c.litrosBrutos, 0);
+                const descontoMedio = totalBruto > 0 ? ((totalBruto - totalLitrosLiquidos) / totalBruto) * 100 : 0;
+
+                const fechamento = {
+                    id: Date.now().toString(),
+                    periodo,
+                    coletas,
+                    totalLitrosLiquidos,
+                    totalPago,
+                    descontoMedio,
+                    qtdColetas: coletas.length,
+                    dataCriacao: new Date().toISOString()
+                };
+
+                setFechamentos([...fechamentos, fechamento]);
+                setCompras(compras.filter(c => !coletas.find(col => col.id === c.id)));
+            };
+
+            const handleDeleteFechamento = (id) => {
+                setFechamentos(fechamentos.filter(f => f.id !== id));
+            };
+
+            const handleOpenWhatsAppShare = (compra) => {
+                const texto = `🛢️ *COMPROVANTE DE COLETA - CROM*\n\n` +
+                    `📍 Fornecedor: ${compra.fornecedor}\n` +
+                    `👤 Coletor: ${compra.coletor}\n` +
+                    `📅 Data: ${formatDate(compra.data)}\n\n` +
+                    `📊 *Detalhes da Coleta:*\n` +
+                    `Litros Brutos: ${compra.litrosBrutos}L\n` +
+                    `Desconto: ${compra.desconto}%\n` +
+                    `Litros Líquidos: ${compra.litrosLiquidos.toFixed(2)}L\n` +
+                    `Valor/Litro: ${formatCurrency(compra.valorLitro)}\n` +
+                    `💰 *Valor Total: ${formatCurrency(compra.valorTotal)}*`;
+                
+                const encodedText = encodeURIComponent(texto);
+                window.open(`https://wa.me/?text=${encodedText}`, '_blank');
+            };
+
+            const customAlert = (titulo, mensagem) => {
+                alert(`${titulo}\n\n${mensagem}`);
+            };
+
+            const customConfirm = (titulo, mensagem) => {
+                return confirm(`${titulo}\n\n${mensagem}`);
+            };
+
+            const customPrompt = (titulo, mensagem, padrao = '') => {
+                return prompt(`${titulo}\n\n${mensagem}`, padrao);
+            };
+
+            const sugerirColetores = useMemo(() => {
+                const nomes = new Set();
+                compras.forEach(c => {
+                    if (c.coletor) nomes.add(c.coletor);
+                });
+                fechamentos.forEach(f => {
+                    f.coletas.forEach(c => {
+                        if (c.coletor) nomes.add(c.coletor);
+                    });
+                });
+                return Array.from(nomes).slice(0, 5);
+            }, [compras, fechamentos]);
+
+            return (
+                <div className="flex h-screen bg-slate-50">
+                    {/* Sidebar */}
+                    <aside className="w-64 bg-zinc-900 text-white flex flex-col hidden md:flex">
+                        <div className="p-6 border-b border-white/10">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="w-12 h-12 bg-crom-lightGreen rounded-xl flex items-center justify-center">
+                                    <span className="text-xl font-black">🛢️</span>
+                                </div>
+                                <div>
+                                    <h1 className="text-lg font-black">CROM</h1>
+                                    <p className="text-xs text-slate-400">Reciclagem de Óleo</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <nav className="flex-1 p-4 space-y-2">
+                            <button
+                                onClick={() => setActiveTab('nova')}
+                                className={`w-full text-left px-4 py-3 rounded-lg font-semibold transition-all ${activeTab === 'nova' ? 'bg-crom-lightGreen text-white' : 'text-slate-300 hover:bg-white/10'}`}
+                            >
+                                ➕ Nova Coleta
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('historico')}
+                                className={`w-full text-left px-4 py-3 rounded-lg font-semibold transition-all ${activeTab === 'historico' ? 'bg-crom-lightGreen text-white' : 'text-slate-300 hover:bg-white/10'}`}
+                            >
+                                📋 Histórico
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('resumo')}
+                                className={`w-full text-left px-4 py-3 rounded-lg font-semibold transition-all ${activeTab === 'resumo' ? 'bg-crom-lightGreen text-white' : 'text-slate-300 hover:bg-white/10'}`}
+                            >
+                                📊 Relatórios
+                            </button>
+                        </nav>
+
+                        <div className="p-4 border-t border-white/10 text-xs text-slate-400">
+                            <p>✅ Dados salvos localmente no tablet</p>
+                            <p className="mt-2">Funciona offline sem internet</p>
+                        </div>
+                    </aside>
+
+                    {/* Main Content -->
+                    <main className="flex-1 overflow-hidden flex flex-col">
+                        {/* Mobile Header */}
+                        <div className="md:hidden bg-crom-green text-white p-4 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <span className="text-2xl">🛢️</span>
+                                <div>
+                                    <h1 className="font-black">CROM</h1>
+                                    <p className="text-xs">Reciclagem de Óleo</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Mobile Tabs */}
+                        <div className="md:hidden flex gap-1 p-2 bg-white border-b">
+                            <button
+                                onClick={() => setActiveTab('nova')}
+                                className={`flex-1 px-3 py-2 rounded text-xs font-bold ${activeTab === 'nova' ? 'bg-crom-lightGreen text-white' : 'bg-slate-100 text-slate-600'}`}
+                            >
+                                ➕ Nova
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('historico')}
+                                className={`flex-1 px-3 py-2 rounded text-xs font-bold ${activeTab === 'historico' ? 'bg-crom-lightGreen text-white' : 'bg-slate-100 text-slate-600'}`}
+                            >
+                                📋 Histórico
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('resumo')}
+                                className={`flex-1 px-3 py-2 rounded text-xs font-bold ${activeTab === 'resumo' ? 'bg-crom-lightGreen text-white' : 'bg-slate-100 text-slate-600'}`}
+                            >
+                                📊 Relatórios
+                            </button>
+                        </div>
+
+                        {/* Content Area */}
+                        <div className="flex-1 overflow-auto p-4">
+                            {activeTab === 'nova' && (
+                                <NovaCompraScreen 
+                                    onSave={handleSaveCompra}
+                                    sugerirColetores={sugerirColetores}
+                                    onOpenWhatsAppShare={handleOpenWhatsAppShare}
+                                    customAlert={customAlert}
+                                    customConfirm={customConfirm}
+                                />
+                            )}
+                            {activeTab === 'historico' && (
+                                <HistoricoScreen
+                                    compras={compras}
+                                    fechamentos={fechamentos}
+                                    onDeleteCompra={handleDeleteCompra}
+                                    onRealizarFechamento={handleRealizarFechamento}
+                                    onDeleteFechamento={handleDeleteFechamento}
+                                    onOpenWhatsAppShare={handleOpenWhatsAppShare}
+                                    customAlert={customAlert}
+                                    customConfirm={customConfirm}
+                                    customPrompt={customPrompt}
+                                />
+                            )}
+                            {activeTab === 'resumo' && (
+                                <ResumoScreen
+                                    compras={compras}
+                                    fechamentos={fechamentos}
+                                    customAlert={customAlert}
+                                />
+                            )}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        // Placeholder Components (você pode copiar as implementações completas do arquivo anterior)
+        const NovaCompraScreen = ({ onSave, sugerirColetores, onOpenWhatsAppShare, customAlert, customConfirm }) => {
+            const [fornecedor, setFornecedor] = useState('');
+            const [data, setData] = useState(new Date().toISOString().split('T')[0]);
+            const [litrosBrutos, setLitrosBrutos] = useState('');
+            const [desconto, setDesconto] = useState('0');
+            const [valorLitro, setValorLitro] = useState('');
+            const [coletor, setColetor] = useState('');
+
+            const lBrutosNum = parseFloat(litrosBrutos) || 0;
+            const descNum = parseFloat(desconto) || 0;
+            const vLitroNum = parseFloat(valorLitro) || 0;
+            const litrosLiquidos = lBrutosNum * (1 - (descNum / 100));
+            const valorTotal = litrosLiquidos * vLitroNum;
+
+            const handleSave = async () => {
+                if (!fornecedor || !data || !litrosBrutos || !valorLitro || !coletor) {
+                    customAlert("Campos Obrigatórios", "Preencha todos os campos obrigatórios!");
+                    return;
+                }
+
+                const novaCompra = {
+                    id: Date.now().toString(),
+                    fornecedor: fornecedor.trim(),
+                    coletor: coletor.trim(),
+                    data,
+                    litrosBrutos: lBrutosNum,
+                    desconto: descNum,
+                    valorLitro: vLitroNum,
+                    litrosLiquidos,
+                    valorTotal,
+                    status: 'aberto',
+                    timestamp: new Date().getTime()
+                };
+
+                onSave(novaCompra);
+                const querCompartilhar = await customConfirm("✅ Coleta Salva!", "Enviar por WhatsApp agora?");
+                if (querCompartilhar) onOpenWhatsAppShare(novaCompra);
+
+                setFornecedor('');
+                setLitrosBrutos('');
+                setDesconto('0');
+                setValorLitro('');
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100">
+                    <h2 className="text-2xl font-black text-slate-800 mb-6">📝 Registrar Nova Coleta</h2>
+                    
+                    <div className="flex-1 overflow-y-auto space-y-4">
+                        <input type="text" placeholder="Fornecedor *" value={fornecedor} onChange={(e) => setFornecedor(e.target.value)} className="w-full p-3 border rounded-lg"/>
+                        <input type="text" placeholder="Coletor *" value={coletor} onChange={(e) => setColetor(e.target.value)} className="w-full p-3 border rounded-lg"/>
+                        <input type="date" value={data} onChange={(e) => setData(e.target.value)} className="w-full p-3 border rounded-lg"/>
+                        <input type="number" placeholder="Litros Brutos *" value={litrosBrutos} onChange={(e) => setLitrosBrutos(e.target.value)} className="w-full p-3 border rounded-lg"/>
+                        <input type="number" placeholder="Desconto %" value={desconto} onChange={(e) => setDesconto(e.target.value)} className="w-full p-3 border rounded-lg"/>
+                        <input type="number" placeholder="Valor por Litro *" value={valorLitro} onChange={(e) => setValorLitro(e.target.value)} className="w-full p-3 border rounded-lg"/>
+                        
+                        <div className="bg-slate-900 text-white p-4 rounded-lg">
+                            <p>Líquido: <span className="font-black">{litrosLiquidos.toFixed(2)}L</span></p>
+                            <p>Total: <span className="font-black">{formatCurrency(valorTotal)}</span></p>
+                        </div>
+                    </div>
+
+                    <button onClick={handleSave} className="w-full mt-4 py-3 bg-crom-lightGreen hover:bg-crom-green text-white font-black rounded-lg">
+                        ✅ SALVAR COLETA
+                    </button>
+                </div>
+            );
+        };
+
+        const HistoricoScreen = ({ compras, fechamentos, onDeleteCompra, onRealizarFechamento, onDeleteFechamento, onOpenWhatsAppShare, customAlert, customConfirm, customPrompt }) => {
+            const activeColetas = compras.filter(c => c.status === 'aberto');
+
+            const handleCloseDay = async () => {
+                if (activeColetas.length === 0) {
+                    customAlert("Sem Coletas", "Não há coletas para fechar!");
+                    return;
+                }
+                const periodo = await customPrompt("Nomear Período", "Digite o nome do período:", `Fechamento ${new Date().toLocaleDateString()}`);
+                if (periodo) onRealizarFechamento(activeColetas, periodo);
+            };
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100">
+                    <h2 className="text-2xl font-black text-slate-800 mb-4">📋 Histórico de Coletas</h2>
+                    
+                    <div className="flex-1 overflow-y-auto space-y-2">
+                        {activeColetas.length === 0 ? (
+                            <p className="text-slate-400 text-center py-8">Nenhuma coleta ativa</p>
+                        ) : (
+                            activeColetas.map(c => (
+                                <div key={c.id} className="p-3 bg-slate-50 rounded-lg border flex justify-between items-center">
+                                    <div>
+                                        <p className="font-bold">{c.fornecedor}</p>
+                                        <p className="text-xs text-slate-500">{c.coletor} • {formatDate(c.data)}</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="font-black">{formatCurrency(c.valorTotal)}</p>
+                                        <p className="text-xs text-slate-400">{c.litrosLiquidos.toFixed(2)}L</p>
+                                    </div>
+                                    <button onClick={() => onDeleteCompra(c.id)} className="text-red-500 hover:bg-red-50 p-2 rounded">🗑️</button>
+                                </div>
+                            ))
+                        )}
+                    </div>
+
+                    {activeColetas.length > 0 && (
+                        <button onClick={handleCloseDay} className="w-full mt-4 py-3 bg-crom-green hover:bg-crom-lightGreen text-white font-black rounded-lg">
+                            🔒 Fechar Período
+                        </button>
+                    )}
+
+                    <div className="mt-6 pt-4 border-t">
+                        <h3 className="font-bold mb-2">Períodos Fechados ({fechamentos.length})</h3>
+                        <div className="space-y-2 max-h-40 overflow-y-auto">
+                            {fechamentos.map(f => (
+                                <div key={f.id} className="p-2 bg-slate-50 rounded flex justify-between items-center text-sm">
+                                    <div>
+                                        <p className="font-bold">{f.periodo}</p>
+                                        <p className="text-xs text-slate-500">{f.qtdColetas} coletas</p>
+                                    </div>
+                                    <button onClick={() => onDeleteFechamento(f.id)} className="text-red-500">🗑️</button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const ResumoScreen = ({ compras, fechamentos, customAlert }) => {
+            const todasColetas = [...compras, ...fechamentos.flatMap(f => f.coletas)];
+            const totalLitros = todasColetas.reduce((acc, c) => acc + c.litrosLiquidos, 0);
+            const totalPago = todasColetas.reduce((acc, c) => acc + c.valorTotal, 0);
+
+            return (
+                <div className="p-6 h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-100">
+                    <h2 className="text-2xl font-black text-slate-800 mb-6">📊 Resumo Consolidado</h2>
+                    
+                    <div className="grid grid-cols-3 gap-4 mb-6">
+                        <div className="bg-blue-50 p-4 rounded-lg">
+                            <p className="text-xs text-slate-600">Total de Litros</p>
+                            <p className="text-2xl font-black">{totalLitros.toFixed(2)}L</p>
+                        </div>
+                        <div className="bg-green-50 p-4 rounded-lg">
+                            <p className="text-xs text-slate-600">Total Pago</p>
+                            <p className="text-2xl font-black">{formatCurrency(totalPago)}</p>
+                        </div>
+                        <div className="bg-purple-50 p-4 rounded-lg">
+                            <p className="text-xs text-slate-600">Total Coletas</p>
+                            <p className="text-2xl font-black">{todasColetas.length}</p>
+                        </div>
+                    </div>
+
+                    <p className="text-center text-slate-500 text-sm">Dados em tempo real sincronizados no tablet</p>
+                </div>
+            );
+        };
+
+        // Render App
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
